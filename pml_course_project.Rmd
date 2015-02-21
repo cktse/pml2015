@@ -1,0 +1,127 @@
+---
+title: 'Practical Machine Learning 2015: Prediction Assignment Writeup'
+author: "C.K. Tse"
+date: "February 21, 2015"
+output: html_document
+---
+
+This is an R Markdown document for the course project of [Practical Machine Learning](https://class.coursera.org/predmachlearn-011/human_grading/view/courses/973546/assessments/4/submissions) using data made available from the research paper [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf).
+
+### Exploratory Analysis: identifying predictors in the training set
+
+####Setup environment, load datasets:
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+```{r}
+library(caret)
+library(randomForest)
+pml.training = read.csv('/Volumes/wakamatsu-s/dev/escience/r101/pml-training.csv')
+pml.testing = read.csv('/Volumes/wakamatsu-s/dev/escience/r101/pml-testing.csv')
+```
+
+####Regarding the lack of summary statistics in the testing dataset:
+While section 5.1 of the cited [paper](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) spoke to the selection of 17 features based on summary statistics 
+(e.g. max, range, mean, variance) calculated at the end of each sliding window, the testing dataset given 
+in this project does not contain such summary statistics data nor the raw data for the full window such that 
+these can derived. (Summary statistic columns are provided in the training dataset for the rows with column 
+‘new_window’ equals ‘yes’, indicating the end of each sliding window. These columns are otherwise ’NA’. All 
+of the ’new_window’ values are ’no’ in the testing dataset, with all of the summary statistic columns equal ‘NA’.)
+
+Given this limitation, unlike the original paper, we cannot rely on the summary statistics columns for feature 
+extraction but rather on the raw data columns instead.
+
+Here's a quick way to identify all of the NA summary statistics columns in the training dataset and drop them off:
+```{r}
+df = pml.training
+drops = nearZeroVar(df[df$new_window != 'yes', ])
+df = df[, -drops]
+```
+
+####Drop remaining columns from training set which aren't relevant to feature extractions:
+e.g. user name, timestamps (not useful given the training dataset per above).  
+```{r}
+drops2 = c('X', 'user_name', 'raw_timestamp_part_1', 'raw_timestamp_part_2', 'cvtd_timestamp', 'num_window')
+df = df[, !(names(df) %in% drops2)]
+```
+The remaining columns will be used as predicators in model building, i.e.  `r length(colnames(df))-1` predictors.
+
+####Split into training + validation set, 70% random sampling:
+```{r}
+inTrain = createDataPartition(y=df$classe, p=0.7, list=FALSE)
+training = df[inTrain, ]
+testing = df[-inTrain, ]
+```
+
+### Model Training
+####Train random forest model with 10-fold cross-validation:
+Random forest was chosen because it generally works well with a large number (`r length(colnames(df))-1`) of potentially non-linear predicators. With the caret package implementation, it will also automatically tune the parameter mtry (number of splits) for accuracy:
+```{r}
+model = train(classe~., training, method='rf', trControl=trainControl(method="cv", number=10), allowParallel=TRUE)
+```
+
+####Check model accuracy on training set:
+```{r}
+model
+plot(model)
+```
+
+Optimal number of splits (mtry) was found to be `r model$finalModel$mtry`, with a forest of `r model$finalModel$ntree` trees, resulting in an accuracy rate of `r round(model$results[1,2]*100,2)`%, i.e. oob error rate of `r 100-round(model$results[1,2]*100,2)`% on the training set.
+
+#####Check model accuracy on validation set:
+```{r}
+pv = predict(model, testing)
+cm = confusionMatrix(pv, testing$classe)
+cm
+```
+
+i.e. accuracy rate of `r round(cm$overall[1]*100,2)`%, i.e. error rate of `r 100-round(cm$overall[1]*100,2)`% on the validation set.
+
+###Run predictions on the original testing set:
+```{r}
+p = predict(model, pml.testing)
+p
+```
+
+###Opportunity to simplify model
+Given the very high accuracy rate, we want to look for opportunity to simplify the model by eliminating predictors which are highly correlated to the others, with absolute correlation cutoff set at 0.75:
+```{r}
+M = cor(training[,-53])
+drop3 = findCorrelation(M, cutoff=0.75)
+colnames(training[drop3])
+```
+
+This reduce the number of predictors in the model to `r length(colnames(training)[-drop3])-1` from `r length(colnames(training))-1`.
+
+####Re-train random forest model with 10-fold cross validation, using the remaining predictors:
+```{r}
+trainingSS = training[, -drop3]
+model2 = train(classe~., trainingSS, method='rf', trControl=trainControl(method="cv", number=10), allowParallel=TRUE)
+```
+
+####Check revised model accuracy on training set:
+```{r}
+model2
+plot(model2)
+```
+
+Optimal number of splits (mtry) was found to be `r model2$finalModel$mtry`, with a forest of `r model2$finalModel$ntree` trees, resulting in an accuracy rate of `r round(model2$results[1,2]*100,2)`%, i.e. oob error rate of `r 100-round(model2$results[1,2]*100,2)`% on the training set.
+
+####Check revised model accuracy on validation set:
+```{r}
+pv = predict(model2, testing)
+cm = confusionMatrix(pv, testing$classe)
+cm
+```
+
+i.e. accuracy rate of `r round(cm$overall[1]*100,2)`%, i.e. error rate of `r 100-round(cm$overall[1]*100,2)`% on the validation set.
+
+###Revised model predictions on the original testing set:
+```{r}
+p2 = predict(model2, pml.testing)
+p2 == p
+```
+
+The simplified model turns out to be working very well compared to the original one. Indeed, they both generate exactly the same predictions on the testing set.
+
+Q.E.D.
